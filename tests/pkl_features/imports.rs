@@ -503,6 +503,23 @@ fn import_expression_reports_missing_modules() {
 }
 
 #[test]
+fn missing_local_amends_and_extends_modules_are_errors() {
+    let temp = TestTempDir::new("pklr_test_missing_base_module");
+    let dir = temp.path();
+    let missing = dir.join("nope/base.pkl");
+    for keyword in ["amends", "extends"] {
+        let child = dir.join(format!("{keyword}.pkl"));
+        std::fs::write(&child, format!("{keyword} \"nope/base.pkl\"\nresult = 1\n")).unwrap();
+
+        let err = pklr::eval_to_json(&child).unwrap_err();
+        assert!(
+            matches!(&err, pklr::Error::ImportNotFound(path) if *path == missing.display().to_string()),
+            "{keyword}: {err}"
+        );
+    }
+}
+
+#[test]
 fn import_expression_imports_the_standard_library() {
     let json = eval(r#"regex = import("pkl:base").Regex"#);
     assert_eq!(json["regex"], "Regex");

@@ -2232,23 +2232,24 @@ impl Evaluator {
                 && (!uri.contains("://") || uri.starts_with("file://"))
             {
                 let amends_path = self.local_file_path(path, uri)?;
-                if self.path_exists_io(&amends_path)? {
-                    self.check_not_self(module, path, &amends_path, "amend")?;
-                    let base_val =
-                        self.eval_file_with_scope(&amends_path, depth + 1, Some(scope.clone()))?;
-                    self.layer_inherited_scope(path, &amends_path, scope);
-                    late_inherited_properties.extend(self.inherited_late_properties(&amends_path));
-                    if let Value::Object(m, _) = &base_val {
-                        self.bind_deferred_inherited_imports(
-                            deferred_inherited_imports,
-                            &amends_path,
-                            &base_val,
-                            scope,
-                        )?;
-                        *base_obj = (**m).clone();
-                    }
-                    *super_members = Some(self.module_super_members(&amends_path, base_obj, false));
+                if !self.path_exists_io(&amends_path)? {
+                    return Err(Error::ImportNotFound(amends_path.display().to_string()));
                 }
+                self.check_not_self(module, path, &amends_path, "amend")?;
+                let base_val =
+                    self.eval_file_with_scope(&amends_path, depth + 1, Some(scope.clone()))?;
+                self.layer_inherited_scope(path, &amends_path, scope);
+                late_inherited_properties.extend(self.inherited_late_properties(&amends_path));
+                if let Value::Object(m, _) = &base_val {
+                    self.bind_deferred_inherited_imports(
+                        deferred_inherited_imports,
+                        &amends_path,
+                        &base_val,
+                        scope,
+                    )?;
+                    *base_obj = (**m).clone();
+                }
+                *super_members = Some(self.module_super_members(&amends_path, base_obj, false));
             }
         }
         Ok(())
@@ -2356,95 +2357,97 @@ impl Evaluator {
             if uri == "pkl:test" {
                 inherit_stdlib_module("test", base_obj, scope);
                 *super_members = Some(base_obj.clone());
-            }
-            if !uri.contains("://") || uri.starts_with("file://") {
+            } else if !uri.starts_with("pkl:")
+                && (!uri.contains("://") || uri.starts_with("file://"))
+            {
                 let extends_path = self.local_file_path(path, uri)?;
-                if self.path_exists_io(&extends_path)? {
-                    self.check_not_self(module, path, &extends_path, "extend")?;
-                    let base_module = self.parse_file(&extends_path)?;
-                    if base_module.amends.is_some() {
-                        return Err(Error::Eval(format!(
-                            "Module `{}` cannot be extended or used as type because it amends another module.",
-                            self.amended_module_name(&base_module, &extends_path)
-                        )));
-                    }
-                    let ext_val =
-                        self.eval_file_with_scope(&extends_path, depth + 1, Some(scope.clone()))?;
-                    self.layer_inherited_scope(path, &extends_path, scope);
-                    late_inherited_properties.extend(self.inherited_late_properties(&extends_path));
-                    let name = extends_path.display().to_string();
-                    let source = self.read_to_string_io(&extends_path)?;
-                    let tokens = lexer::lex_named(&source, &name)?;
-                    let ext_module = self.parse_registered(&tokens, &source, &name)?;
-                    if !ext_module.annotations.iter().any(|annotation| {
-                        matches!(
-                            annotation.name.as_str(),
-                            "pklr:module:Open" | "pklr:module:Abstract"
-                        )
-                    }) {
-                        return Err(Error::Eval(format!(
-                            "Cannot extend non-open module `{}`.",
-                            extends_path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        )));
-                    }
-                    if let Value::Object(m, _) = &ext_val {
-                        self.bind_deferred_inherited_imports(
-                            deferred_inherited_imports,
-                            &extends_path,
-                            &ext_val,
-                            scope,
-                        )?;
-                        *base_obj = (**m).clone();
-                    }
-                    let mut base_scope = scope.clone();
-                    base_scope.type_namespace = Some(self.module_type_namespace(&extends_path));
-                    // Also evaluate the base module's scope (classes, locals) into our scope
-                    // by re-processing its body entries
-                    for entry in ext_module.body.iter() {
-                        match entry {
-                            Entry::ClassDef(cls_name, cls_mods, parent, body) => {
-                                let defaults = self.eval_class_def(
-                                    cls_name,
-                                    cls_mods,
-                                    parent.as_deref(),
-                                    body,
-                                    &base_scope,
-                                    depth,
-                                )?;
-                                scope.set(cls_name, defaults.clone());
-                                if depth == 0 {
-                                    base_obj.shift_remove(cls_name.as_str());
-                                } else {
-                                    base_obj.insert(
-                                        cls_name.as_str().into(),
-                                        defaults.clone().declared_as_member(cls_name),
-                                    );
-                                }
-                            }
-                            Entry::TypeAlias(name, ty, generic) => {
-                                self.eval_type_alias(name, ty, generic.as_ref(), scope);
-                            }
-                            Entry::Property(prop) if &*prop.name == "output" && depth == 0 => {
-                                self.extract_converters_from_ast(prop, scope, depth);
-                            }
-                            Entry::Property(prop)
-                                if !has_modifier(&prop.modifiers, Modifier::Local)
-                                    && &*prop.name != "output" =>
-                            {
-                                push_base_property(late_inherited_properties, prop);
-                                if let Ok(Some(value)) = self.eval_property(prop, scope, depth) {
-                                    scope.set(&prop.name, value);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    *super_members = Some(self.module_super_members(&extends_path, base_obj, true));
-                    *super_name = Some(module_display_name(&base_module, &extends_path));
+                if !self.path_exists_io(&extends_path)? {
+                    return Err(Error::ImportNotFound(extends_path.display().to_string()));
                 }
+                self.check_not_self(module, path, &extends_path, "extend")?;
+                let base_module = self.parse_file(&extends_path)?;
+                if base_module.amends.is_some() {
+                    return Err(Error::Eval(format!(
+                        "Module `{}` cannot be extended or used as type because it amends another module.",
+                        self.amended_module_name(&base_module, &extends_path)
+                    )));
+                }
+                let ext_val =
+                    self.eval_file_with_scope(&extends_path, depth + 1, Some(scope.clone()))?;
+                self.layer_inherited_scope(path, &extends_path, scope);
+                late_inherited_properties.extend(self.inherited_late_properties(&extends_path));
+                let name = extends_path.display().to_string();
+                let source = self.read_to_string_io(&extends_path)?;
+                let tokens = lexer::lex_named(&source, &name)?;
+                let ext_module = self.parse_registered(&tokens, &source, &name)?;
+                if !ext_module.annotations.iter().any(|annotation| {
+                    matches!(
+                        annotation.name.as_str(),
+                        "pklr:module:Open" | "pklr:module:Abstract"
+                    )
+                }) {
+                    return Err(Error::Eval(format!(
+                        "Cannot extend non-open module `{}`.",
+                        extends_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    )));
+                }
+                if let Value::Object(m, _) = &ext_val {
+                    self.bind_deferred_inherited_imports(
+                        deferred_inherited_imports,
+                        &extends_path,
+                        &ext_val,
+                        scope,
+                    )?;
+                    *base_obj = (**m).clone();
+                }
+                let mut base_scope = scope.clone();
+                base_scope.type_namespace = Some(self.module_type_namespace(&extends_path));
+                // Also evaluate the base module's scope (classes, locals) into our scope
+                // by re-processing its body entries
+                for entry in ext_module.body.iter() {
+                    match entry {
+                        Entry::ClassDef(cls_name, cls_mods, parent, body) => {
+                            let defaults = self.eval_class_def(
+                                cls_name,
+                                cls_mods,
+                                parent.as_deref(),
+                                body,
+                                &base_scope,
+                                depth,
+                            )?;
+                            scope.set(cls_name, defaults.clone());
+                            if depth == 0 {
+                                base_obj.shift_remove(cls_name.as_str());
+                            } else {
+                                base_obj.insert(
+                                    cls_name.as_str().into(),
+                                    defaults.clone().declared_as_member(cls_name),
+                                );
+                            }
+                        }
+                        Entry::TypeAlias(name, ty, generic) => {
+                            self.eval_type_alias(name, ty, generic.as_ref(), scope);
+                        }
+                        Entry::Property(prop) if &*prop.name == "output" && depth == 0 => {
+                            self.extract_converters_from_ast(prop, scope, depth);
+                        }
+                        Entry::Property(prop)
+                            if !has_modifier(&prop.modifiers, Modifier::Local)
+                                && &*prop.name != "output" =>
+                        {
+                            push_base_property(late_inherited_properties, prop);
+                            if let Ok(Some(value)) = self.eval_property(prop, scope, depth) {
+                                scope.set(&prop.name, value);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                *super_members = Some(self.module_super_members(&extends_path, base_obj, true));
+                *super_name = Some(module_display_name(&base_module, &extends_path));
             } else if uri.starts_with("https://") || uri.starts_with("http://") {
                 self.check_not_self(module, path, Path::new(uri), "extend")?;
                 let source = self.fetch_source(uri)?;
