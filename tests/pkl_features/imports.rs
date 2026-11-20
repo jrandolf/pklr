@@ -1546,6 +1546,47 @@ extended = ExtendsBase.extendsName
 }
 
 #[test]
+fn amending_module_and_its_base_import_the_same_module_under_one_name() {
+    let temp = TestTempDir::new("pklr_test_same_import_in_base");
+    let dir = temp.path();
+    std::fs::write(
+        dir.join("Config.pkl"),
+        "class Step { check: String }\nsteps: Mapping<String, Step>\nlabel: String?\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Builtins.pkl"),
+        r#"import "Config.pkl"
+newlines = new Config.Step { check = "newlines" }
+prettier = new Config.Step { check = "prettier" }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("mid.pkl"),
+        r#"amends "Config.pkl"
+import "Builtins.pkl"
+steps { ["a"] = Builtins.newlines }
+label = Builtins.newlines.check
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("hk.pkl"),
+        r#"amends "mid.pkl"
+import "Builtins.pkl"
+steps { ["b"] = Builtins.prettier }
+"#,
+    )
+    .unwrap();
+
+    let val = pklr::eval_to_json(&dir.join("hk.pkl")).unwrap();
+    assert_eq!(val["steps"]["a"]["check"], "newlines");
+    assert_eq!(val["steps"]["b"]["check"], "prettier");
+    assert_eq!(val["label"], "newlines");
+}
+
+#[test]
 fn import_used_only_by_annotation_does_not_create_builtin_cycle() {
     let temp = TestTempDir::new("pklr_test_annotation_import_cycle");
     let dir = temp.path();

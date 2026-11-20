@@ -212,11 +212,36 @@ impl Evaluator {
     }
 
     /// Layer the scope of the base `base` that `child` amends or extends into
-    /// `scope`, and remember it as the child's base.
+    /// `scope`, and remember it as the child's base. An import the child has
+    /// declared by then keeps the child's binding when the base imports the
+    /// same module under the same name: each binding holds only the members
+    /// that its own module reads.
     fn layer_inherited_scope(&mut self, child: &Path, base: &Path, scope: &mut Scope) {
         self.inherited_bases
             .insert(child.to_path_buf(), base.to_path_buf());
+        let own: Vec<(Name, Value, String)> = self
+            .module_scopes
+            .get(base)
+            .map(|inherited| {
+                scope
+                    .declared
+                    .iter()
+                    .filter_map(|name| {
+                        let identity = scope.module_identities.get(name)?;
+                        if inherited.module_identities.get(name.as_ref()) != Some(identity) {
+                            return None;
+                        }
+                        let value = scope.vars.get(name)?.clone();
+                        Some((name.clone(), value, identity.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         self.layer_evaluated_module_scope(base, scope);
+        for (name, value, identity) in own {
+            scope.set_name(name.clone(), value);
+            scope.set_module_identity(name, identity);
+        }
     }
 
     pub(super) fn layer_evaluated_module_scope(&self, path: &Path, scope: &mut Scope) {
@@ -393,12 +418,14 @@ impl Evaluator {
 
     /// A base module's own expressions keep reading the members they were
     /// written against: a `local` member is never overridden, whether the base
-    /// or this module declares it. Bind those members' base values around the
-    /// inherited properties that read them.
+    /// or this module declares it, and neither is a name this module imports
+    /// (`imported`). Bind those members' base values around the inherited
+    /// properties that read them.
     fn shadow_inherited_locals(
         &mut self,
         module: &Module,
         path: &Path,
+        imported: &HashSet<Name>,
         late_inherited: &mut [Arc<Property>],
     ) {
         if late_inherited.is_empty() {
@@ -437,6 +464,11 @@ impl Evaluator {
                 continue;
             }
             shadowed.push((name, value.clone()));
+        }
+        for name in imported {
+            if let Some(value) = base.values.get(name.as_ref()) {
+                shadowed.push((name.clone(), value.clone()));
+            }
         }
         if shadowed.is_empty() {
             return;
@@ -593,6 +625,8 @@ impl Evaluator {
             &import_field_uses,
             &inherited_local_paths,
         )?;
+        // The names the imports bind: nothing else is declared yet.
+        let imported = Arc::clone(&scope.declared);
 
         let mut base = ModuleBase::default();
         self.amend_base_module(
@@ -620,7 +654,7 @@ impl Evaluator {
             mut super_members,
             super_name,
         } = base;
-        self.shadow_inherited_locals(module, path, &mut late_inherited_properties);
+        self.shadow_inherited_locals(module, path, &imported, &mut late_inherited_properties);
 
         if (module.amends.is_some() || module.extends.is_some()) && super_members.is_none() {
             super_members = Some(base_obj.clone());
